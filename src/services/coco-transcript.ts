@@ -83,6 +83,18 @@ export function drainCocoEvents(path: string, fromOffset: number): CocoDrainResu
       if (!content) continue;
       events.push({ uuid: `${path}:${lineStart}`, timestampMs, kind: 'user', text: content });
     } else if (msg.role === 'assistant') {
+      // CoCo emits two assistant shapes per turn:
+      //   - finish_reason:'tool_calls' — mid-turn "thinking out loud" before
+      //     a tool call. Sometimes carries visible text (e.g. "Let me run
+      //     the tests..."). Treating these as final would close the
+      //     pending Lark turn early with mid-turn narration; the actual
+      //     `stop` message that follows would then drop on the floor
+      //     because the queue's collecting slot is already cleared.
+      //   - finish_reason:'stop' — the model's terminal answer. This is
+      //     what the bridge fallback should forward.
+      // Only the latter becomes assistant_final; everything else is skipped.
+      const finishReason = msg.response_meta?.finish_reason;
+      if (finishReason !== 'stop') continue;
       const content = messageText(msg.content);
       if (!content) continue;
       events.push({ uuid: `${path}:${lineStart}`, timestampMs, kind: 'assistant_final', text: content });

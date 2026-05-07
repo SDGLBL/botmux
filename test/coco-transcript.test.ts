@@ -8,15 +8,26 @@ let dir: string;
 let path: string;
 
 function line(obj: any): string { return JSON.stringify(obj) + '\n'; }
-function msg(role: 'user' | 'assistant', content: string, extra: any = {}, ts = '2026-04-30T02:33:13.000+08:00') {
+function userMsg(content: string, extra: any = {}, ts = '2026-04-30T02:33:13.000+08:00') {
   return {
     id: Math.random().toString(36).slice(2),
     created_at: ts,
-    message: { message: { role, content, extra } },
+    message: { message: { role: 'user', content, extra } },
   };
 }
-function originalUser(content: string) { return msg('user', content, { is_original_user_input: true }); }
-function assistant(content: string) { return msg('assistant', content, { response_meta: { finish_reason: 'stop' } }); }
+function assistantMsg(
+  content: string,
+  finishReason: 'stop' | 'tool_calls' = 'stop',
+  ts = '2026-04-30T02:33:13.000+08:00',
+) {
+  return {
+    id: Math.random().toString(36).slice(2),
+    created_at: ts,
+    message: { message: { role: 'assistant', content, response_meta: { finish_reason: finishReason } } },
+  };
+}
+function originalUser(content: string) { return userMsg(content, { is_original_user_input: true }); }
+function assistant(content: string) { return assistantMsg(content, 'stop'); }
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'coco-transcript-'));
@@ -45,11 +56,28 @@ describe('drainCocoEvents', () => {
 
   it('skips injected user system reminders', () => {
     writeFileSync(path,
-      line(msg('user', '<system-reminder>ignore</system-reminder>', { is_additional_context_input: true })) +
+      line(userMsg('<system-reminder>ignore</system-reminder>', { is_additional_context_input: true })) +
       line(originalUser('real prompt')));
     const r = drainCocoEvents(path, 0);
     expect(r.events).toHaveLength(1);
     expect(r.events[0].text).toBe('real prompt');
+  });
+
+  it('skips assistant tool_calls events even when content is non-empty', () => {
+    // CoCo emits mid-turn narration like "Let me run the tests..." with
+    // finish_reason=tool_calls before invoking a tool. Treating that as
+    // assistant_final would close the Lark turn early and drop the real
+    // stop message that follows.
+    writeFileSync(path,
+      line(originalUser('run the tests')) +
+      line(assistantMsg('Let me run the tests now.', 'tool_calls')) +
+      line(assistantMsg('', 'tool_calls')) +
+      line(assistantMsg('All 35 tests passed.', 'stop')));
+    const r = drainCocoEvents(path, 0);
+    expect(r.events.map(e => [e.kind, e.text])).toEqual([
+      ['user', 'run the tests'],
+      ['assistant_final', 'All 35 tests passed.'],
+    ]);
   });
 
   it('ignores malformed and non-message lines', () => {
