@@ -13,7 +13,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock node builtins that command-handler imports directly
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, existsSync: vi.fn(() => true) };
+  return {
+    ...actual,
+    existsSync: vi.fn(() => true),
+    statSync: vi.fn(() => ({ isDirectory: () => true })),
+    // Identity realpath — tests don't rely on symlink resolution, and the
+    // fallback in canonicalize() picks up resolve(p) on throw anyway.
+    realpathSync: vi.fn((p: string) => p),
+  };
 });
 
 vi.mock('node:os', async (importOriginal) => {
@@ -126,6 +133,12 @@ vi.mock('../src/utils/user-token.js', () => ({
   getTokenStatus: vi.fn(() => 'User token: active'),
 }));
 
+vi.mock('../src/services/oncall-store.js', () => ({
+  bindOncall: vi.fn(() => ({ ok: true, created: true })),
+  unbindOncall: vi.fn(() => ({ ok: true })),
+  getOncallStatus: vi.fn(() => undefined),
+}));
+
 // ─── Imports (after mocks) ──────────────────────────────────────────────────
 
 import { DAEMON_COMMANDS, PASSTHROUGH_COMMANDS, handleCommand, parseSlashCommandInvocation } from '../src/core/command-handler.js';
@@ -140,7 +153,10 @@ import * as scheduleStore from '../src/services/schedule-store.js';
 import * as scheduler from '../src/core/scheduler.js';
 import { deleteMessage } from '../src/im/lark/client.js';
 import { generateAuthUrl, getTokenStatus } from '../src/utils/user-token.js';
-import { existsSync } from 'node:fs';
+import { bindOncall, getOncallStatus } from '../src/services/oncall-store.js';
+import { getBot } from '../src/bot-registry.js';
+import { existsSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { scanMultipleProjects } from '../src/services/project-scanner.js';
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
@@ -515,7 +531,7 @@ describe('handleCommand', () => {
       expect(replyContent).toContain('工作目录已切换');
     });
 
-    it('should reject paths outside home directory', async () => {
+    it('should reject paths outside allowed roots', async () => {
       vi.mocked(existsSync).mockReturnValue(true);
 
       const ds = makeDaemonSession();
@@ -525,7 +541,63 @@ describe('handleCommand', () => {
 
       expect(killWorker).not.toHaveBeenCalled();
       const replyContent = (deps.sessionReply as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
-      expect(replyContent).toContain('路径必须在用户主目录');
+      expect(replyContent).toContain('路径不在允许的工作区根目录下');
+      expect(replyContent).toContain('BOTMUX_EXTRA_ROOTS');
+    });
+
+    it('should reject path that exists but is not a directory', async () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(statSync).mockReturnValueOnce({ isDirectory: () => false } as any);
+
+      const ds = makeDaemonSession();
+      const deps = makeDeps(ds);
+
+      await handleCommand('/cd', ROOT_ID, makeLarkMessage('/cd /home/testuser/some-file.txt'), deps, LARK_APP_ID);
+
+      expect(killWorker).not.toHaveBeenCalled();
+      const replyContent = (deps.sessionReply as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
+      expect(replyContent).toContain('路径不是目录');
+    });
+
+    it('should not be fooled by /root2 prefix when home is /root', async () => {
+      // Regression: the old `startsWith(home)` check let `/root2` slip through
+      // when home was `/root`. With path.relative this should be rejected.
+      vi.mocked(homedir).mockReturnValueOnce('/root');
+      vi.mocked(existsSync).mockReturnValue(true);
+
+      const ds = makeDaemonSession();
+      const deps = makeDeps(ds);
+
+      await handleCommand('/cd', ROOT_ID, makeLarkMessage('/cd /root2/evil'), deps, LARK_APP_ID);
+
+      expect(killWorker).not.toHaveBeenCalled();
+      const replyContent = (deps.sessionReply as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
+      expect(replyContent).toContain('路径不在允许的工作区根目录下');
+    });
+
+    it('should accept paths under BOTMUX_EXTRA_ROOTS', async () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      const prev = process.env.BOTMUX_EXTRA_ROOTS;
+      process.env.BOTMUX_EXTRA_ROOTS = '/data00/home';
+
+      try {
+        const ds = makeDaemonSession();
+        const deps = makeDeps(ds);
+
+        await handleCommand(
+          '/cd',
+          ROOT_ID,
+          makeLarkMessage('/cd /data00/home/wanghao.muchen/ai-workspace/marketing_insight'),
+          deps,
+          LARK_APP_ID,
+        );
+
+        expect(killWorker).toHaveBeenCalledWith(ds);
+        expect(ds.workingDir).toBe('/data00/home/wanghao.muchen/ai-workspace/marketing_insight');
+      } finally {
+        if (prev === undefined) delete process.env.BOTMUX_EXTRA_ROOTS;
+        else process.env.BOTMUX_EXTRA_ROOTS = prev;
+      }
     });
   });
 
@@ -764,6 +836,84 @@ describe('handleCommand', () => {
       expect(getTokenStatus).toHaveBeenCalled();
       const replyContent = (deps.sessionReply as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
       expect(replyContent).toContain('User token: active');
+    });
+  });
+
+  // ─── /oncall ────────────────────────────────────────────────────────────
+
+  describe('/oncall', () => {
+    it('should bind when path is under home directory', async () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      const ds = makeDaemonSession();
+      const deps = makeDeps(ds);
+
+      await handleCommand(
+        '/oncall',
+        ROOT_ID,
+        makeLarkMessage('/oncall bind /home/testuser/projects/foo'),
+        deps,
+        LARK_APP_ID,
+      );
+
+      expect(bindOncall).toHaveBeenCalledWith(
+        LARK_APP_ID,
+        CHAT_ID,
+        '/home/testuser/projects/foo',
+        'ou_sender',
+      );
+      const replyContent = (deps.sessionReply as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
+      expect(replyContent).toContain('已绑定 oncall');
+    });
+
+    it('should reject /oncall bind path outside allowed roots', async () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      const ds = makeDaemonSession();
+      const deps = makeDeps(ds);
+
+      await handleCommand(
+        '/oncall',
+        ROOT_ID,
+        makeLarkMessage('/oncall bind /etc/secrets'),
+        deps,
+        LARK_APP_ID,
+      );
+
+      expect(bindOncall).not.toHaveBeenCalled();
+      const replyContent = (deps.sessionReply as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
+      expect(replyContent).toContain('路径不在允许的工作区根目录下');
+    });
+
+    it('should not let one chat see another chat oncall binding as an allowed root', async () => {
+      // Scoping: helper only adds the *current* chat's existing oncall
+      // binding to allowed roots. A path that's only bound for `oc_other`
+      // must NOT be reachable from CHAT_ID.
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(getBot).mockReturnValueOnce({
+        config: {
+          larkAppId: LARK_APP_ID,
+          larkAppSecret: 'secret-1',
+          cliId: 'claude-code',
+          workingDir: '~/projects',
+          oncallChats: [
+            { chatId: 'oc_other_chat', workingDir: '/data00/team-b', owners: [] },
+          ],
+        },
+      } as any);
+
+      const ds = makeDaemonSession(); // chatId = CHAT_ID = 'oc_chat_xyz'
+      const deps = makeDeps(ds);
+
+      await handleCommand(
+        '/oncall',
+        ROOT_ID,
+        makeLarkMessage('/oncall bind /data00/team-b/repo'),
+        deps,
+        LARK_APP_ID,
+      );
+
+      expect(bindOncall).not.toHaveBeenCalled();
+      const replyContent = (deps.sessionReply as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
+      expect(replyContent).toContain('路径不在允许的工作区根目录下');
     });
   });
 
