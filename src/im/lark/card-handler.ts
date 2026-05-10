@@ -61,12 +61,15 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
   const isSensitive = value?.action && ['restart', 'close', 'skip_repo', 'get_write_link', 'toggle_stream', 'toggle_display', 'export_text', 'term_action', 'refresh_screenshot', 'takeover', 'disconnect', 'tui_keys', 'tui_text_input'].includes(value.action);
   if (isSensitive) {
     const rootId = value?.root_id;
-    // activeSessions here is keyed by sessionKey(rootId, larkAppId); try both
-    // the per-bot key and the raw rootId (legacy single-bot shape) so ds
-    // lookup works for both code paths.
+    // activeSessions is keyed by sessionKey(anchor, larkAppId) — `${anchor}::${larkAppId}`
+    // (double colon). Earlier this was hand-spliced with a single colon and
+    // always missed, falling through to the bare-rootId legacy lookup; that
+    // worked for permission gating only because chatId came from elsewhere
+    // most of the time. Use sessionKey() so the bot-scoped lookup actually
+    // hits, and keep the bare-rootId fallback for legacy single-bot cards.
     const ds = rootId
       ? (larkAppId
-          ? activeSessions.get(`${rootId}:${larkAppId}`) ?? activeSessions.get(rootId)
+          ? activeSessions.get(sessionKey(rootId, larkAppId)) ?? activeSessions.get(rootId)
           : activeSessions.get(rootId))
       : undefined;
     const effectiveAppId = larkAppId ?? ds?.larkAppId;
