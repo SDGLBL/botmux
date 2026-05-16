@@ -110,12 +110,12 @@ botmux schedule add "每日11:00" "
 
 const HISTORY_SKILL = `---
 name: botmux-history
-description: 需要查看当前飞书会话历史消息时触发。话题群拉话题内消息，普通群拉整群消息（从 session 创建起的最近 N 条）。适合"看看之前聊了什么"、"最近的消息"、"上下文"类请求。在 CLI 会话内自动推断 session-id。
+description: 需要查看当前飞书会话历史消息时触发。话题群拉话题内消息，普通群拉整群最近 N 条（默认 50，用 --limit 调节，最多 50/页）。适合"看看之前聊了什么"、"最近的消息"、"上下文"类请求。在 CLI 会话内自动推断 session-id。
 ---
 
 # botmux-history — 读取会话消息历史
 
-想回顾当前飞书会话里用户之前发过什么、别的机器人说了什么时使用。**话题群和普通群都支持**：话题群里只返回当前话题内的消息，普通群里返回整群从 session 创建起的最近 N 条。
+想回顾当前飞书会话里用户之前发过什么、别的机器人说了什么时使用。**话题群和普通群都支持**：话题群里只返回当前话题内的消息，普通群里返回整群最近 N 条（默认 50，按时间倒序取尾部、再按时间正序返回）。觉得历史太多就把 \`--limit\` 调小，需要更多上下文就调大。
 
 ## 用法
 
@@ -150,7 +150,7 @@ JSON 格式，字段：
 ## 注意
 
 - \`scope=thread\`：只返回属于当前话题的消息（按 rootMessageId 过滤）
-- \`scope=chat\`：返回当前群从 session 创建起的最近 N 条整群消息
+- \`scope=chat\`：返回当前群整群最近 N 条消息（不限于 session 创建之后，需要更老的就把 --limit 调大）
 - \`senderType="app"\` 表示机器人发的消息（包括 Claude Code / Codex / 其它 bot），\`"user"\` 表示用户
 - **合并转发**消息会自动展开：\`msgType\` 变为 \`merge_forward_expanded\`，\`content\` 是 \`<forwarded_messages>...</forwarded_messages>\` XML（含 \`<participants>\` 别名表 + 嵌套 \`<msg from="A">\` 节点），与 daemon 实时事件路径一致
 - 需要先把 JSON 读进来再做总结，不要直接把 JSON 扔给用户

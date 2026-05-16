@@ -1751,16 +1751,16 @@ async function cmdHistory(rest: string[]): Promise<void> {
   const sessionIdArg = argValue(rest, '--session-id');
   const { sid, larkAppId: appId, session: s } = await resolveSessionAppId(sessionIdArg);
 
-  const { listThreadMessages, listChatMessagesSince } = await import('./im/lark/client.js');
+  const { listThreadMessages, listChatMessages } = await import('./im/lark/client.js');
   const { parseApiMessage } = await import('./im/lark/message-parser.js');
   const { expandMergeForward } = await import('./im/lark/merge-forward.js');
   try {
     // Chat-scope sessions (普通群整群一会话) have no thread to walk — list the
-    // chat container since the session was created. Thread-scope sessions
-    // walk the thread container by root_id.
+    // chat container directly and let the caller cap with --limit. Thread-scope
+    // sessions walk the thread container by root_id.
     const isChatScope = s.scope === 'chat';
     const raw = isChatScope
-      ? await listChatMessagesSince(appId, s.chatId, Date.parse(s.createdAt) || 0, limit)
+      ? await listChatMessages(appId, s.chatId, limit)
       : await listThreadMessages(appId, s.chatId, s.rootMessageId, limit);
     // Expand merge_forward to <forwarded_messages> XML, mirroring the live event
     // path in daemon.ts. Each merge_forward gets its own numberer (we don't

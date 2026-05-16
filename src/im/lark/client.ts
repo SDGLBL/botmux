@@ -504,19 +504,16 @@ async function listByThread(c: any, threadId: string, pageSize: number): Promise
   return allMessages.slice(0, pageSize);
 }
 
-/** List chat-container messages since a given epoch (ms), most-recent first
- *  but returned chronologically (oldest → newest, capped at `pageSize`).
- *  Used by `botmux history` for chat-scope sessions (普通群整群一会话):
- *  no thread to walk, so we walk the chat itself. We page in Desc order so a
- *  long-running chat-scope session (hundreds of messages) returns its TAIL,
- *  not its head — that's the context the caller wants. */
-export async function listChatMessagesSince(
-  larkAppId: string, chatId: string, sinceMs: number, pageSize: number = 50,
+/** List chat-container messages, most-recent first but returned chronologically
+ *  (oldest → newest, capped at `pageSize`). Used by `botmux history` for
+ *  chat-scope sessions (普通群整群一会话): no thread to walk, so we walk the
+ *  chat itself. We page in Desc order so a long-running chat returns its TAIL,
+ *  not its head — that's the context the caller wants. The caller controls
+ *  how much history they get via `pageSize`. */
+export async function listChatMessages(
+  larkAppId: string, chatId: string, pageSize: number = 50,
 ): Promise<any[]> {
   const c = getBotClient(larkAppId);
-  // Lark message.list start_time / end_time are 10-digit unix seconds (string).
-  // Subtract 1s to make sure the boundary message (e.g. the seed) is included.
-  const startSec = Math.max(0, Math.floor(sinceMs / 1000) - 1);
   const allMessages: any[] = [];
   let pageToken: string | undefined;
 
@@ -527,7 +524,6 @@ export async function listChatMessagesSince(
         container_id: chatId,
         page_size: Math.min(pageSize, LARK_MESSAGE_LIST_MAX_PAGE),
         sort_type: 'ByCreateTimeDesc' as any,
-        start_time: String(startSec),
         ...(pageToken ? { page_token: pageToken } : {}),
       },
     });
