@@ -7,7 +7,7 @@
  * Run:  pnpm vitest run test/message-parser.test.ts
  */
 import { describe, it, expect } from 'vitest';
-import { parseApiMessage, extractResources, parseEventMessage, stripLeadingMentions } from '../src/im/lark/message-parser.js';
+import { parseApiMessage, extractResources, parseEventMessage, stripLeadingMentions, createImgNumberer } from '../src/im/lark/message-parser.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -326,6 +326,67 @@ describe('stripLeadingMentions', () => {
       { name: 'CoCo' },
     ]);
     expect(out).toBe('/close');
+  });
+});
+
+// ─── Shared numberer: cmdQuoted invariant ─────────────────────────────────
+// cmdQuoted renders a single quoted message by chaining extractResources →
+// parseApiMessage. Both calls must share one numberer so the `[图片 N]`
+// placeholders inside the rendered `content` align 1:1 with the indices of
+// the returned `resources` array. If they used independent numberers
+// (the bug Codex caught), a multi-image post would emit `[图片 1] [图片 2]`
+// inside content but resources[0]/resources[1] would still be the same two
+// keys — alignment LOOKS right by accident at N=2 but breaks the moment we
+// add a 2nd numbering source (e.g. nested merge_forward).
+
+describe('cmdQuoted shared-numberer invariant', () => {
+  it('post with two images: [图片 1]/[图片 2] in content map to resources[0]/[1] keys when one numberer is shared', () => {
+    const postContent = JSON.stringify({
+      zh_cn: {
+        title: '截图',
+        content: [
+          [{ tag: 'text', text: '第一张：' }, { tag: 'img', image_key: 'img_aaa' }],
+          [{ tag: 'text', text: '第二张：' }, { tag: 'img', image_key: 'img_bbb' }],
+        ],
+      },
+    });
+    const msg = {
+      message_id: 'om_post',
+      msg_type: 'post',
+      create_time: '1000',
+      sender: { id: 'ou_u', sender_type: 'user' },
+      body: { content: postContent },
+    };
+
+    // Match the cmdQuoted call order exactly: extractResources first, then
+    // parseApiMessage. Same numberer instance threaded through both.
+    const numberer = createImgNumberer();
+    const resources = extractResources(msg.msg_type, msg.body.content, numberer);
+    const parsed = parseApiMessage(msg, numberer);
+
+    expect(resources).toEqual([
+      { type: 'image', key: 'img_aaa', name: 'img_aaa.jpg' },
+      { type: 'image', key: 'img_bbb', name: 'img_bbb.jpg' },
+    ]);
+    expect(parsed.content).toContain('[图片 1]');
+    expect(parsed.content).toContain('[图片 2]');
+    expect(parsed.content.indexOf('[图片 1]')).toBeLessThan(parsed.content.indexOf('[图片 2]'));
+  });
+
+  it('image message: [图片 1] in content matches the single resource', () => {
+    const imgContent = JSON.stringify({ image_key: 'img_zzz' });
+    const msg = {
+      message_id: 'om_img',
+      msg_type: 'image',
+      create_time: '1000',
+      sender: { id: 'ou_u', sender_type: 'user' },
+      body: { content: imgContent },
+    };
+    const numberer = createImgNumberer();
+    const resources = extractResources(msg.msg_type, msg.body.content, numberer);
+    const parsed = parseApiMessage(msg, numberer);
+    expect(resources).toEqual([{ type: 'image', key: 'img_zzz', name: 'img_zzz.jpg' }]);
+    expect(parsed.content).toBe('[图片 1]');
   });
 });
 

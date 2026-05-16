@@ -27,6 +27,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { enableAutostart, disableAutostart, autostartStatus, refreshAutostart } from './autostart.js';
 import { tmuxEnv } from './setup/ensure-tmux.js';
 import { logger } from './utils/logger.js';
+import { firstPositional } from './cli/arg-utils.js';
 
 // CLI subcommands (send/thread/bots/list/etc) print JSON to stdout for
 // callers to parse. Transitive logger.info calls from shared modules would
@@ -1785,21 +1786,24 @@ async function cmdHistory(rest: string[]): Promise<void> {
   }
 }
 
+
 async function cmdQuoted(rest: string[]): Promise<void> {
   const sessionIdArg = argValue(rest, '--session-id');
   // Positional message_id is required. The id comes verbatim from the
   // `[用户引用了消息 用 botmux quoted om_xxx 查看]` prompt prefix the daemon
-  // injects when the user used the Lark quote-reply UI.
-  const messageId = rest.find(a => !a.startsWith('-') && !a.startsWith('--'));
+  // injects when the user used the Lark quote-reply UI. Skip --session-id and
+  // its value so `botmux quoted --session-id <uuid> om_xxx` doesn't pick up
+  // the uuid as the message id.
+  const messageId = firstPositional(rest, ['--session-id']);
   if (!messageId) {
-    console.error('用法: botmux quoted <message_id>');
+    console.error('用法: botmux quoted <message_id> [--session-id <id>]');
     process.exit(1);
   }
 
   const { larkAppId: appId } = await resolveSessionAppId(sessionIdArg);
 
   const { getMessageDetail } = await import('./im/lark/client.js');
-  const { parseApiMessage, extractResources } = await import('./im/lark/message-parser.js');
+  const { parseApiMessage, extractResources, createImgNumberer } = await import('./im/lark/message-parser.js');
   const { expandMergeForward } = await import('./im/lark/merge-forward.js');
   try {
     const detail = await getMessageDetail(appId, messageId);
@@ -1808,11 +1812,20 @@ async function cmdQuoted(rest: string[]): Promise<void> {
       console.error(`未找到消息 ${messageId}`);
       process.exit(1);
     }
-    const parsed = parseApiMessage(msg);
+    // Share ONE numberer across resource extraction + text rendering + merge_forward
+    // expansion so `[图片 N]` placeholders in the rendered content map 1:1 to
+    // the `resources` array indices. Order matters: extractResources first so
+    // top-level keys get numbers 1..N, then parseApiMessage reuses them when
+    // rendering placeholders, then expandMergeForward (for merge_forward) keeps
+    // the same numberer for deep sub-message images and returns extraResources
+    // that we concat onto the top-level list.
+    const numberer = createImgNumberer();
+    const resources = extractResources(msg.msg_type ?? '', msg.body?.content ?? '', numberer);
+    const parsed = parseApiMessage(msg, numberer);
     if (parsed.msgType === 'merge_forward') {
-      await expandMergeForward(appId, parsed.messageId, parsed);
+      const { extraResources } = await expandMergeForward(appId, parsed.messageId, parsed, numberer);
+      resources.push(...extraResources);
     }
-    const resources = extractResources(msg.msg_type ?? '', msg.body?.content ?? '');
     console.log(JSON.stringify({
       ...parsed,
       resources,

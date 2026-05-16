@@ -17,6 +17,7 @@ import * as scheduleStore from './services/schedule-store.js';
 import * as messageQueue from './services/message-queue.js';
 import { parseEventMessage, resolveNonsupportMessage, stripLeadingMentions, type MessageResource } from './im/lark/message-parser.js';
 import { expandMergeForward } from './im/lark/merge-forward.js';
+import { buildQuoteHint } from './im/lark/quote-hint.js';
 import { logger } from './utils/logger.js';
 import { ensureCjkFontsInstalled } from './utils/font-installer.js';
 import type { DaemonToWorker, LarkMessage } from './types.js';
@@ -495,6 +496,15 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
     sessionReply(anchor, '⚠️ 部分图片/文件下载失败（缺少 User Token）。请在话题中发送 /login 授权后重新发送。', 'text', larkAppId);
   }
 
+  // First-turn quote-reply: when the user @s the bot via Lark's "quote" UI as
+  // the very first interaction (no active session yet), the same hint that
+  // handleThreadReply prepends needs to ride along here too. Without it, the
+  // bot never learns about the quoted message_id and `botmux quoted` is dead
+  // weight on first turns. `content` (post force-topic-strip) is what the
+  // worker will see; promptContent wraps it for prompt-building paths but
+  // leaves `content` untouched for title / log substring uses.
+  const promptContent = buildQuoteHint(parsed, scope, anchor) + content;
+
   refreshCliVersion(botCfg.cliId, botCfg.cliPathOverride);
 
   // Create session in pending-repo state — don't spawn CLI yet.
@@ -552,7 +562,7 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
     lastMessageAt: now,
     hasHistory: false,
     pendingRepo: !pinnedWorkingDir,
-    pendingPrompt: content,
+    pendingPrompt: promptContent,
     pendingAttachments: attachments.length > 0 ? attachments : undefined,
     pendingMentions: parsed.mentions,
     ownerOpenId: senderOpenId,
@@ -568,7 +578,7 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
   // Pinned (oncall binding or inherited from sibling bot): spawn CLI immediately.
   if (pinnedWorkingDir) {
     const selfBot = getBot(larkAppId);
-    const prompt = buildNewTopicPrompt(content, session.sessionId, botCfg.cliId, botCfg.cliPathOverride, attachments, parsed.mentions, await getAvailableBots(larkAppId, chatId), undefined, { name: selfBot.botName, openId: selfBot.botOpenId });
+    const prompt = buildNewTopicPrompt(promptContent, session.sessionId, botCfg.cliId, botCfg.cliPathOverride, attachments, parsed.mentions, await getAvailableBots(larkAppId, chatId), undefined, { name: selfBot.botName, openId: selfBot.botOpenId });
     forkWorker(ds, prompt);
     const reason = oncallEntry
       ? `oncall-bound chat ${chatId}`
@@ -593,7 +603,7 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
     // No projects found — skip repo selection, spawn directly
     ds.pendingRepo = false;
     const selfBot = getBot(larkAppId);
-    const prompt = buildNewTopicPrompt(content, session.sessionId, botCfg.cliId, botCfg.cliPathOverride, attachments, parsed.mentions, await getAvailableBots(larkAppId, chatId), undefined, { name: selfBot.botName, openId: selfBot.botOpenId });
+    const prompt = buildNewTopicPrompt(promptContent, session.sessionId, botCfg.cliId, botCfg.cliPathOverride, attachments, parsed.mentions, await getAvailableBots(larkAppId, chatId), undefined, { name: selfBot.botName, openId: selfBot.botOpenId });
     forkWorker(ds, prompt);
     logger.info(`Session ${session.sessionId} ready (no projects to select), total active: ${getActiveCount()}`);
   }
@@ -667,18 +677,7 @@ async function handleThreadReply(data: any, ctx: RoutingContext): Promise<void> 
     ? `[来自 ${lookupForeignBotName(senderOpenIdForPrefix!, larkAppId)} 的 @mention]\n`
     : '';
 
-  // Quote-reply hint: when the user used the Lark "quote" UI to reference an
-  // earlier message, surface its message_id so the bot can opt-in fetch it via
-  // `botmux quoted`. Skip when parent_id == this thread's root (a plain thread
-  // reply with no specific quote, e.g. inside a 话题群) — that's not a
-  // user-visible quote, just thread plumbing.
-  const quotedId = parsed.parentId;
-  const threadRoot = scope === 'thread' ? anchor : null;
-  const quotePrefix = (quotedId && quotedId !== threadRoot && quotedId !== parsed.messageId)
-    ? `[用户引用了消息 用 botmux quoted ${quotedId} 查看]\n`
-    : '';
-
-  const promptContent = quotePrefix + botSenderPrefix + parsed.content;
+  const promptContent = buildQuoteHint(parsed, scope, anchor) + botSenderPrefix + parsed.content;
   if (isForeignBot) {
     logger.info(
       `[${larkAppId}] foreign-bot @mention prefix attached: sender=${senderOpenIdForPrefix?.substring(0, 12)} ` +

@@ -172,8 +172,11 @@ export function extractResources(msgType: string, rawContent: string, numberer?:
       for (const block of contentBlocks) {
         const nodes = Array.isArray(block) ? block : [block];
         for (const node of nodes) {
-          if (node.tag === 'img' && node.image_key) {
+          if ((node.tag === 'img' || node.tag === 'media') && node.image_key) {
             pushIfNew(resources, { type: 'image', key: node.image_key, name: `${node.image_key}.jpg` });
+          }
+          if (node.tag === 'file' && node.file_key) {
+            pushIfNew(resources, { type: 'file', key: node.file_key, name: node.file_name ?? node.file_key });
           }
         }
       }
