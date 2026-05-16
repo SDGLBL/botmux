@@ -373,6 +373,39 @@ describe('cmdQuoted shared-numberer invariant', () => {
     expect(parsed.content.indexOf('[图片 1]')).toBeLessThan(parsed.content.indexOf('[图片 2]'));
   });
 
+  it('post with one image + one file: image and file counters are independent ([图片 1] + [文件 1])', () => {
+    // Regression: extractResources used to share a global counter so this
+    // would emit `[图片 1]` + `[文件 2]`, but formatAttachmentsHint emits
+    // <image n="1"> + <file n="1"> — the bot saw [文件 2] in prompt but only
+    // <file n="1"> in attachments and read the wrong file. Per-type counters
+    // align placeholders with the attachment footer.
+    const postContent = JSON.stringify({
+      zh_cn: {
+        title: '混合',
+        content: [
+          [{ tag: 'text', text: '图：' }, { tag: 'img', image_key: 'img_aaa' }],
+          [{ tag: 'text', text: '文件：' }, { tag: 'file', file_key: 'file_bbb', file_name: 'spec.pdf' }],
+        ],
+      },
+    });
+    const msg = {
+      message_id: 'om_mixed',
+      msg_type: 'post',
+      create_time: '1000',
+      sender: { id: 'ou_u', sender_type: 'user' },
+      body: { content: postContent },
+    };
+    const numberer = createImgNumberer();
+    const resources = extractResources(msg.msg_type, msg.body.content, numberer);
+    const parsed = parseApiMessage(msg, numberer);
+    expect(resources).toEqual([
+      { type: 'image', key: 'img_aaa', name: 'img_aaa.jpg' },
+      { type: 'file', key: 'file_bbb', name: 'spec.pdf' },
+    ]);
+    expect(parsed.content).toContain('[图片 1]');
+    expect(parsed.content).toContain('[文件 1: spec.pdf]');
+  });
+
   it('image message: [图片 1] in content matches the single resource', () => {
     const imgContent = JSON.stringify({ image_key: 'img_zzz' });
     const msg = {

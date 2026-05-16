@@ -1803,8 +1803,8 @@ async function cmdQuoted(rest: string[]): Promise<void> {
   const { larkAppId: appId } = await resolveSessionAppId(sessionIdArg);
 
   const { getMessageDetail } = await import('./im/lark/client.js');
-  const { parseApiMessage, extractResources, createImgNumberer } = await import('./im/lark/message-parser.js');
   const { expandMergeForward } = await import('./im/lark/merge-forward.js');
+  const { renderQuotedMessage } = await import('./cli/quoted-render.js');
   try {
     const detail = await getMessageDetail(appId, messageId);
     const msg = detail?.items?.[0];
@@ -1812,24 +1812,8 @@ async function cmdQuoted(rest: string[]): Promise<void> {
       console.error(`未找到消息 ${messageId}`);
       process.exit(1);
     }
-    // Share ONE numberer across resource extraction + text rendering + merge_forward
-    // expansion so `[图片 N]` placeholders in the rendered content map 1:1 to
-    // the `resources` array indices. Order matters: extractResources first so
-    // top-level keys get numbers 1..N, then parseApiMessage reuses them when
-    // rendering placeholders, then expandMergeForward (for merge_forward) keeps
-    // the same numberer for deep sub-message images and returns extraResources
-    // that we concat onto the top-level list.
-    const numberer = createImgNumberer();
-    const resources = extractResources(msg.msg_type ?? '', msg.body?.content ?? '', numberer);
-    const parsed = parseApiMessage(msg, numberer);
-    if (parsed.msgType === 'merge_forward') {
-      const { extraResources } = await expandMergeForward(appId, parsed.messageId, parsed, numberer);
-      resources.push(...extraResources);
-    }
-    console.log(JSON.stringify({
-      ...parsed,
-      resources,
-    }, null, 2));
+    const rendered = await renderQuotedMessage(appId, msg, expandMergeForward);
+    console.log(JSON.stringify(rendered, null, 2));
   } catch (err: any) {
     console.error(`获取被引用消息失败: ${err.message}`);
     process.exit(1);
