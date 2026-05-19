@@ -132,7 +132,7 @@ export async function resolveUserToken(appId: string, appSecret: string): Promis
   const envToken = process.env.FEISHU_USER_ACCESS_TOKEN;
   if (envToken) return envToken;
 
-  // 2. Token files (botmux own → feishu-cli fallback)
+  // 2. Token file (~/.botmux/data/user-token.json)
   const loaded = loadToken();
   if (!loaded) return null;
 
