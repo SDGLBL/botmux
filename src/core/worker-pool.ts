@@ -92,6 +92,10 @@ function tag(ds: DaemonSession): string {
   return ds.session.sessionId.substring(0, 8);
 }
 
+function sessionCliId(ds: DaemonSession, botCfg: { cliId: CliId }): CliId {
+  return ds.session.cliId ?? botCfg.cliId;
+}
+
 const WORKER_ERROR_MARKER = '[botmux-worker-error]';
 
 function logWorkerStderr(t: string, line: string): void {
@@ -513,19 +517,21 @@ export function forkWorker(ds: DaemonSession, prompt: string, resume = false): v
   worker.send(initMsg);
   ds.initConfig = initMsg;
 
+  // Stamp cliId on the persisted session so the dashboard can show a CLI badge
+  // even after the session is closed. Do this before installing worker handlers:
+  // a fast worker can emit `ready` immediately after init, and card rendering
+  // must see the session-level CLI identity rather than the bot default.
+  if (ds.session.cliId !== botCfg.cliId) {
+    ds.session.cliId = botCfg.cliId;
+    sessionStore.updateSession(ds.session);
+  }
+
   // Use shared handler for IPC messages and exit
   setupWorkerHandlers(ds, worker);
 
   ds.worker = worker;
   ds.spawnedAt = Date.now();
   ds.cliVersion = currentCliVersion;
-  // Stamp cliId on the persisted session so the dashboard can show a CLI badge
-  // even after the session is closed. Subsequent updateSession spreads carry
-  // this field forward for free.
-  if (ds.session.cliId !== botCfg.cliId) {
-    ds.session.cliId = botCfg.cliId;
-    sessionStore.updateSession(ds.session);
-  }
   sessionStore.updateSessionPid(ds.session.sessionId, worker.pid ?? null);
   logger.info(`[${t}] Worker forked (pid: ${worker.pid}, active: ${cb.getActiveCount()})`);
 
@@ -554,6 +560,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
   const showTakeover = false;
 
   worker.on('message', async (msg: WorkerToDaemon) => {
+    const effectiveCliId = sessionCliId(ds, botCfg);
     switch (msg.type) {
       case 'ready': {
         ds.workerPort = msg.port;
@@ -583,7 +590,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
             : undefined;
         if (restoredCardId) {
           try {
-            const initTitle = ds.currentTurnTitle || ds.session.title || getCliDisplayName(botCfg.cliId);
+            const initTitle = ds.currentTurnTitle || ds.session.title || getCliDisplayName(effectiveCliId);
             // Reuse persisted nonce so existing card buttons (toggle/etc) keep working.
             if (!ds.streamCardNonce) ds.streamCardNonce = randomBytes(4).toString('hex');
             const streamCardJson = buildStreamingCard(
@@ -593,7 +600,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
               initTitle,
               ds.lastScreenContent ?? '',
               'starting',
-              botCfg.cliId,
+              effectiveCliId,
               ds.displayMode ?? 'hidden',
               ds.streamCardNonce,
               ds.currentImageKey,
@@ -627,7 +634,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
         ds.streamCardId = CARD_POSTING_SENTINEL;
         try {
           ds.streamCardNonce = randomBytes(4).toString('hex');
-          const initTitle = ds.currentTurnTitle || ds.session.title || getCliDisplayName(botCfg.cliId);
+          const initTitle = ds.currentTurnTitle || ds.session.title || getCliDisplayName(effectiveCliId);
           const streamCardJson = buildStreamingCard(
             ds.session.sessionId,
             sessionAnchorId(ds),
@@ -635,7 +642,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
             initTitle,
             '',
             'starting',
-            botCfg.cliId,
+            effectiveCliId,
             ds.displayMode ?? 'hidden',
             ds.streamCardNonce,
             ds.currentImageKey,
@@ -666,8 +673,8 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
               ds.session.sessionId,
               sessionAnchorId(ds),
               readOnlyUrl,
-              ds.session.title || getCliDisplayName(botCfg.cliId),
-              botCfg.cliId,
+              ds.session.title || getCliDisplayName(effectiveCliId),
+              effectiveCliId,
               undefined,
               !!ds.adoptedFrom,
               loc,
@@ -688,7 +695,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
       }
 
       case 'prompt_ready': {
-        logger.info(`[${t}] ${getCliDisplayName(botCfg.cliId)} is ready for input`);
+        logger.info(`[${t}] ${getCliDisplayName(effectiveCliId)} is ready for input`);
         break;
       }
 
@@ -717,7 +724,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
         }
 
         const readUrl = `http://${config.web.externalHost}:${ds.workerPort}`;
-        const turnTitle = ds.currentTurnTitle || ds.session.title || getCliDisplayName(botCfg.cliId);
+        const turnTitle = ds.currentTurnTitle || ds.session.title || getCliDisplayName(effectiveCliId);
         const mode: DisplayMode = ds.displayMode ?? 'hidden';
 
         if (ds.streamCardPending || !ds.streamCardId) {
@@ -738,7 +745,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
             turnTitle,
             isNewTurn ? '' : msg.content,
             msg.status,
-            botCfg.cliId,
+            effectiveCliId,
             mode,
             ds.streamCardNonce,
             ds.currentImageKey,
@@ -784,7 +791,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
             turnTitle,
             msg.content,
             msg.status,
-            botCfg.cliId,
+            effectiveCliId,
             mode,
             ds.streamCardNonce,
             ds.currentImageKey,
@@ -807,7 +814,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
         if ((ds.displayMode ?? 'hidden') !== 'screenshot') break;
         if (!ds.streamCardId || ds.streamCardId === CARD_POSTING_SENTINEL || !ds.workerPort) break;
         const readUrl = `http://${config.web.externalHost}:${ds.workerPort}`;
-        const turnTitle = ds.currentTurnTitle || ds.session.title || getCliDisplayName(botCfg.cliId);
+        const turnTitle = ds.currentTurnTitle || ds.session.title || getCliDisplayName(effectiveCliId);
         const cardJson = buildStreamingCard(
           ds.session.sessionId,
           sessionAnchorId(ds),
@@ -815,7 +822,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
           turnTitle,
           ds.lastScreenContent ?? '',
           msg.status,
-          botCfg.cliId,
+          effectiveCliId,
           'screenshot',
           ds.streamCardNonce,
           ds.currentImageKey,
@@ -882,7 +889,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
       }
 
       case 'claude_exit': {
-        logger.info(`[${t}] ${getCliDisplayName(botCfg.cliId)} exited (code: ${msg.code}, signal: ${msg.signal})`);
+        logger.info(`[${t}] ${getCliDisplayName(effectiveCliId)} exited (code: ${msg.code}, signal: ${msg.signal})`);
         ds.hasHistory = true;
 
         // Do NOT auto-restart in adopt mode — there's nothing to restart
@@ -891,10 +898,10 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
           // Freeze the streaming card
           if (ds.streamCardId && ds.workerPort) {
             const readUrl = `http://${config.web.externalHost}:${ds.workerPort}`;
-            const turnTitle = ds.currentTurnTitle || ds.session.title || getCliDisplayName(botCfg.cliId);
+            const turnTitle = ds.currentTurnTitle || ds.session.title || getCliDisplayName(effectiveCliId);
             const frozenCard = buildStreamingCard(
               ds.session.sessionId, sessionAnchorId(ds), readUrl, turnTitle,
-              ds.lastScreenContent ?? '', 'idle', botCfg.cliId,
+              ds.lastScreenContent ?? '', 'idle', effectiveCliId,
               ds.displayMode ?? 'hidden', ds.streamCardNonce, ds.currentImageKey,
               isAdopt, showTakeover,
             );
@@ -924,14 +931,14 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
         restartCounts.set(key, rc);
 
         if (rc.count > 3) {
-          logger.warn(`[${t}] ${getCliDisplayName(botCfg.cliId)} crashed ${rc.count} times in 1 min, not auto-restarting`);
+          logger.warn(`[${t}] ${getCliDisplayName(effectiveCliId)} crashed ${rc.count} times in 1 min, not auto-restarting`);
           // Freeze the last streaming card so it doesn't stay at "working" forever
           if (ds.streamCardId && ds.workerPort) {
             const readUrl = `http://${config.web.externalHost}:${ds.workerPort}`;
-            const turnTitle = ds.currentTurnTitle || ds.session.title || getCliDisplayName(botCfg.cliId);
+            const turnTitle = ds.currentTurnTitle || ds.session.title || getCliDisplayName(effectiveCliId);
             const frozenCard = buildStreamingCard(
               ds.session.sessionId, sessionAnchorId(ds), readUrl, turnTitle,
-              ds.lastScreenContent ?? '', 'idle', botCfg.cliId,
+              ds.lastScreenContent ?? '', 'idle', effectiveCliId,
               ds.displayMode ?? 'hidden', ds.streamCardNonce, ds.currentImageKey,
               isAdopt, showTakeover, loc,
             );
@@ -939,7 +946,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
           }
           // Kill the worker process to free resources
           killWorker(ds);
-          const cliName = getCliDisplayName(botCfg.cliId);
+          const cliName = getCliDisplayName(effectiveCliId);
           try {
             await cb.sessionReply(sessionAnchorId(ds), tr('worker.crash_loop_stopped', { cliName, count: rc.count }, loc), 'text', ds.larkAppId);
           } catch (replyErr) {
@@ -953,7 +960,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
 
         // Auto-restart CLI within the same worker
         if (ds.worker && !ds.worker.killed) {
-          logger.info(`[${t}] Auto-restarting ${getCliDisplayName(botCfg.cliId)}...`);
+          logger.info(`[${t}] Auto-restarting ${getCliDisplayName(effectiveCliId)}...`);
           ds.worker.send({ type: 'restart' } as DaemonToWorker);
         }
         break;
@@ -1007,7 +1014,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
           title: '📜 /adopt 前最后一轮',
           userText: msg.userText,
           assistantText: msg.assistantText,
-          assistantLabel: getCliDisplayName(botCfg.cliId),
+          assistantLabel: getCliDisplayName(effectiveCliId),
           recipientOpenId: ds.session.ownerOpenId,
         });
         cb.sessionReply(sessionAnchorId(ds), cardJson, 'interactive', ds.larkAppId).catch((err: any) => {
@@ -1058,6 +1065,7 @@ function deliverFinalOutput(
   attempt: number,
 ): void {
   const cb = requireCallbacks();
+  const effectiveCliId = ds.session.cliId ?? getBot(ds.larkAppId).config.cliId;
   setTimeout(async () => {
     // Guard: if the user closed the session (or it was torn down for any
     // other reason) between attempts, don't post a stale final answer to
@@ -1085,7 +1093,7 @@ function deliverFinalOutput(
               : '🖥️ 终端本地对话（在 adopted pane 中直接输入，已同步至飞书）',
             userText: msg.kind === 'local-turn' ? msg.userText ?? '' : undefined,
             assistantText: msg.content,
-            assistantLabel: getCliDisplayName(getBot(ds.larkAppId).config.cliId),
+            assistantLabel: getCliDisplayName(effectiveCliId),
             recipientOpenId: ds.session.ownerOpenId,
           })
         : buildMarkdownCard(msg.content, ds.session.ownerOpenId);
@@ -1224,6 +1232,15 @@ export function forkAdoptWorker(ds: DaemonSession, opts?: { restoredFromMetadata
   };
   worker.send(initMsg);
   ds.initConfig = initMsg;
+  // Stamp cliId on the persisted session so the dashboard can show a CLI badge
+  // even after the session is closed. Adopt sessions inherit the adopted CLI's id.
+  // Do this before installing worker handlers: a fast worker can emit `ready`
+  // immediately after init, and card rendering must use the adopted CLI identity.
+  const adoptedCliIdTyped = adoptedCliId as CliId;
+  if (ds.session.cliId !== adoptedCliIdTyped) {
+    ds.session.cliId = adoptedCliIdTyped;
+    sessionStore.updateSession(ds.session);
+  }
 
   // Use shared handler
   setupWorkerHandlers(ds, worker);
@@ -1231,13 +1248,6 @@ export function forkAdoptWorker(ds: DaemonSession, opts?: { restoredFromMetadata
   ds.worker = worker;
   ds.spawnedAt = Date.now();
   ds.cliVersion = '';
-  // Stamp cliId on the persisted session so the dashboard can show a CLI badge
-  // even after the session is closed. Adopt sessions inherit the adopted CLI's id.
-  const adoptedCliIdTyped = adoptedCliId as CliId;
-  if (ds.session.cliId !== adoptedCliIdTyped) {
-    ds.session.cliId = adoptedCliIdTyped;
-    sessionStore.updateSession(ds.session);
-  }
   logger.info(`[${t}] Adopt worker forked (pid: ${worker.pid}, target: ${adopted.tmuxTarget})`);
 
   ds.exitEventEmitted = false;

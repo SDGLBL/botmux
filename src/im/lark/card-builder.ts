@@ -39,6 +39,7 @@ export function buildSessionCard(
   locale?: Locale,
 ): string {
   const cliName = getCliDisplayName(cliId ?? 'claude-code');
+  const actionBase = { root_id: rootId, session_id: sessionId, cli_id: cliId ?? 'claude-code' };
   const actions: any[] = [
     {
       tag: 'button',
@@ -57,7 +58,7 @@ export function buildSessionCard(
       tag: 'button',
       text: { tag: 'plain_text', content: t('card.btn.get_write_link', undefined, locale) },
       type: 'default',
-      value: { action: 'get_write_link', root_id: rootId, session_id: sessionId },
+      value: { action: 'get_write_link', ...actionBase },
     });
   }
   if (showManageButtons && !adoptMode) {
@@ -65,7 +66,7 @@ export function buildSessionCard(
       tag: 'button',
       text: { tag: 'plain_text', content: t('card.btn.restart_cli', { cliName }, locale) },
       type: 'default',
-      value: { action: 'restart', root_id: rootId, session_id: sessionId },
+      value: { action: 'restart', ...actionBase },
     });
   }
   if (adoptMode) {
@@ -73,20 +74,20 @@ export function buildSessionCard(
       tag: 'button',
       text: { tag: 'plain_text', content: t('card.btn.disconnect', undefined, locale) },
       type: 'danger',
-      value: { action: 'disconnect', root_id: rootId, session_id: sessionId },
+      value: { action: 'disconnect', ...actionBase },
     });
   } else {
     actions.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t('card.btn.close_session', undefined, locale) },
       type: 'danger',
-      value: { action: 'close', root_id: rootId, session_id: sessionId },
+      value: { action: 'close', ...actionBase },
     });
   }
   const card = {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: `🖥️ ${escapeMd(title)}` },
+      title: { tag: 'plain_text', content: `🖥️ ${cliName} · ${escapeMd(title)}` },
       template: 'blue',
     },
     elements: [
@@ -121,6 +122,7 @@ export function buildSessionClosedCard(
   locale?: Locale,
 ): string {
   const cliName = getCliDisplayName(cliId ?? 'claude-code');
+  const actionBase = { root_id: rootId, session_id: sessionId, cli_id: cliId ?? 'claude-code' };
   const dirLine = workingDir ? `\n${t('card.body.working_dir', undefined, locale)}\`${escapeMd(workingDir)}\`` : '';
   const cmdBlock = cliResumeCommand
     ? `${t('card.body.click_resume_or_run', undefined, locale)}\n\`\`\`\n${cliResumeCommand}\n\`\`\``
@@ -144,7 +146,7 @@ export function buildSessionClosedCard(
             tag: 'button',
             text: { tag: 'plain_text', content: t('card.btn.resume_session', undefined, locale) },
             type: 'primary',
-            value: { action: 'resume', root_id: rootId, session_id: sessionId },
+            value: { action: 'resume', ...actionBase },
           },
         ],
       },
@@ -204,7 +206,9 @@ export function buildStreamingCard(
   showTakeover?: boolean,
   locale?: Locale,
 ): string {
-  void cliId;
+  const effectiveCliId = cliId ?? 'claude-code';
+  const cliName = getCliDisplayName(effectiveCliId);
+  const actionBase = { root_id: rootId, session_id: sessionId, cli_id: effectiveCliId, ...(cardNonce ? { card_nonce: cardNonce } : {}) };
   const templateMap = { starting: 'yellow', working: 'blue', idle: 'green', analyzing: 'purple' } as const;
   const statusLabel = (s: typeof status): string => {
     switch (s) {
@@ -240,14 +244,14 @@ export function buildStreamingCard(
     tag: 'button',
     text: { tag: 'plain_text', content: t(displayMode === 'hidden' ? 'card.btn.show_output' : 'card.btn.hide_output', undefined, locale) },
     type: 'default' as const,
-    value: { action: 'toggle_display', root_id: rootId, session_id: sessionId, ...(cardNonce ? { card_nonce: cardNonce } : {}) },
+    value: { action: 'toggle_display', ...actionBase },
   });
   if (displayMode !== 'hidden') {
     headerActions.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t('card.btn.export_text', undefined, locale) },
       type: 'default' as const,
-      value: { action: 'export_text', root_id: rootId, session_id: sessionId, ...(cardNonce ? { card_nonce: cardNonce } : {}) },
+      value: { action: 'export_text', ...actionBase },
     });
   }
   if (displayMode === 'screenshot') {
@@ -255,7 +259,7 @@ export function buildStreamingCard(
       tag: 'button',
       text: { tag: 'plain_text', content: t('card.btn.refresh', undefined, locale) },
       type: 'default' as const,
-      value: { action: 'refresh_screenshot', root_id: rootId, session_id: sessionId, ...(cardNonce ? { card_nonce: cardNonce } : {}) },
+      value: { action: 'refresh_screenshot', ...actionBase },
     });
   }
   headerActions.push({
@@ -268,7 +272,7 @@ export function buildStreamingCard(
     tag: 'button',
     text: { tag: 'plain_text', content: t('card.btn.get_write_link', undefined, locale) },
     type: 'default',
-    value: { action: 'get_write_link', root_id: rootId, session_id: sessionId },
+    value: { action: 'get_write_link', ...actionBase },
   });
   if (adoptMode) {
     if (showTakeover) {
@@ -276,21 +280,21 @@ export function buildStreamingCard(
         tag: 'button',
         text: { tag: 'plain_text', content: t('card.btn.takeover', undefined, locale) },
         type: 'default' as const,
-        value: { action: 'takeover', root_id: rootId, session_id: sessionId },
+        value: { action: 'takeover', ...actionBase },
       });
     }
     headerActions.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t('card.btn.disconnect', undefined, locale) },
       type: 'danger' as const,
-      value: { action: 'disconnect', root_id: rootId, session_id: sessionId },
+      value: { action: 'disconnect', ...actionBase },
     });
   } else {
     headerActions.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t('card.btn.close_session', undefined, locale) },
       type: 'danger' as const,
-      value: { action: 'close', root_id: rootId, session_id: sessionId },
+      value: { action: 'close', ...actionBase },
     });
   }
   elements.push({ tag: 'action', actions: headerActions });
@@ -302,7 +306,7 @@ export function buildStreamingCard(
       tag: 'button',
       text: { tag: 'plain_text', content: label },
       type: 'default' as const,
-      value: { action: 'term_action', root_id: rootId, session_id: sessionId, key },
+      value: { action: 'term_action', ...actionBase, key },
     });
     elements.push({
       tag: 'action',
@@ -330,7 +334,7 @@ export function buildStreamingCard(
   const card = {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: `🖥️ ${escapeMd(title)} — ${statusLabel(status)}` },
+      title: { tag: 'plain_text', content: `🖥️ ${cliName} · ${escapeMd(title)} — ${statusLabel(status)}` },
       template: templateMap[status],
     },
     elements,
