@@ -2152,7 +2152,7 @@ async function flushPending(): Promise<void> {
       // backend regression). flushPending is invoked fire-and-forget, so an
       // escaping rejection would become an unhandledRejection and crash the
       // worker — exactly the failure mode this change is closing. Contain it.
-      let result: Awaited<ReturnType<typeof cliAdapter.writeInput>>;
+      let result: Awaited<ReturnType<typeof cliAdapter.writeInput>> | undefined;
       try {
         result = await cliAdapter.writeInput(backend, msg);
       } catch (err: any) {
